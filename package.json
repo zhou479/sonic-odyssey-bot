@@ -13,6 +13,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@2captcha/captcha-solver": "^1.1.0",
     "@faker-js/faker": "^8.4.1",
     "@solana/web3.js": "^1.93.0",
     "axios": "^1.7.2",

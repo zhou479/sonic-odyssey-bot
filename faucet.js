@@ -1,111 +1,91 @@
 const fs = require('fs');
 const solana = require('@solana/web3.js');
 const base58 = require('bs58');
-const crypto = require('crypto');
 const { faker } = require('@faker-js/faker');
 const { SocksProxyAgent } = require('socks-proxy-agent');
+const axios = require('axios');
+const TwoCaptcha = require("@2captcha/captcha-solver")
 require('colors');
 
-const PRIVATE_KEYS = JSON.parse(fs.readFileSync('privateKeys.json', 'utf-8'));
-const captchaKey = 'api key';
+const solver = new TwoCaptcha.Solver("<you api key>")       //填入验证码平台api私钥
+
+const PRIVATE_KEYS = JSON.parse(fs.readFileSync('privateKeys.json', 'utf-8'));      //获取文件中的私钥
 
 const delay = (seconds) => new Promise((resolve) => setTimeout(resolve, seconds * 1000));
 
-function getKeypair(privateKey) {
+function get_keypair(privateKey) {
     const decodedPrivateKey = base58.decode(privateKey);
     return solana.Keypair.fromSecretKey(decodedPrivateKey);
 }
 
-function generateRandomString(length) {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-    return Array.from({ length }, () => chars[crypto.randomInt(chars.length)]).join('');
-}
-
-async function twocaptcha_turnstile(sitekey, pageurl) {
+async function faucet_claim(address, beraer_token) {
     try {
-        const getTokenResponse = await fetch(`https://2captcha.com/in.php?key=${captchaKey}&method=turnstile&sitekey=${sitekey}&pageurl=${pageurl}&json=1`);
-        const getTokenText = await getTokenResponse.text();
-        
-        if (getTokenText === 'ERROR_WRONG_USER_KEY' || getTokenText === 'ERROR_ZERO_BALANCE') {
-            return getTokenText;
-        }
-        
-        const getToken = getTokenText.split('|');
-        if (getToken[0] !== 'OK') {
-            return 'FAILED_GETTING_TOKEN';
-        }
-        
-        const task = getToken[1];
-        for (let i = 0; i < 60; i++) {
-            const tokenResponse = await fetch(`https://2captcha.com/res.php?key=${captchaKey}&action=get&id=${task}&json=1`);
-            const token = await tokenResponse.json();
-            
-            if (token.status === 1) {
-                return token;
+        const userAgent = faker.internet.userAgent();
+        const proxyUrl = 'socks5://127.0.0.1:7890';
+        const agent = new SocksProxyAgent(proxyUrl);
+        const service = axios.create({
+            httpAgent: agent,
+            httpsAgent: agent
+        });
+
+        let config = {
+            method: 'get',
+            maxBodyLength: Infinity,
+            // url: `https://faucet-api.sonic.game/airdrop/${address}/0.5/${beraer_token}`,     //备用水龙头
+            url: `https://faucet-api-grid-1.sonic.game/airdrop/${address}/0.5/${beraer_token}`,
+            headers: {
+                "Accept": "application/json, text/plain, */*",
+                "Content-Type": "application/json",
+                "Accept-Language": "en-US,en;q=0.9,id;q=0.8",
+                "Origin": "https://faucet.sonic.game",
+                "Priority": "u=1, i",
+                "Referer": "https://faucet.sonic.game/",
+                "User-Agent": userAgent,
+                "sec-ch-ua-mobile": "?0",
             }
-            await delay(2);
+        };
+        const res = await service.request(config);
+        if (res.data.status === 'ok') {
+            console.log(`Successfully claim faucet 0.5 SOL!`.green);
+        } else {
+            throw new Error(`${address} 领水请求返回失败: ${res.data.message}`);
         }
     } catch (error) {
-        console.error('Error getting token:', error);
+        throw new Error(`${address} 领水请求发送失败: ${error.message}`);
     }
-    return 'FAILED_GETTING_TOKEN';
 }
 
-async function claimFaucet(url, address) {
-    const maxRetries = 5;
-    const userAgent = faker.internet.userAgent();
-    const proxy_str = generateRandomString(10);
-    const proxyUrl = `socks5://5BE434A53DB6C369-residential-country_HK-r_30m-s_${proxy_str}:jFWGxRob@gate.nstproxy.io:24125`;
-    const agent = new SocksProxyAgent(proxyUrl);
 
-    for (let retryTimes = 0; retryTimes < maxRetries; retryTimes++) {
-        const bearer = await twocaptcha_turnstile('0x4AAAAAAAc6HG1RMG_8EHSC', 'https://faucet.sonic.game/#/');
-        if (['ERROR_WRONG_USER_KEY', 'ERROR_ZERO_BALANCE', 'FAILED_GETTING_TOKEN'].includes(bearer)) {
-            console.log(`${address} 获取bearer令牌失败, 重试 (${retryTimes + 1}/${maxRetries})`.yellow);
+async function bypass_turnstile(address, retry_count = 0) {
+    const retry = async (reason) => {
+        if (retry_count < 5) {
+            console.log(`地址 ${address} 尝试领水失败 : ${reason}, 正在重试...(${retry_count + 1}/5)`.yellow);
             await delay(2);
-            continue;
+            return await bypass_turnstile(address, retry_count + 1);
+        } else {
+            console.log(`地址 ${address} 领水失败，已达到最大重试次数`.red);
         }
-
-        try {
-            const res = await fetch(`${url}/${address}/0.5/${bearer.request}`, {
-                headers: {
-                    "Accept": "application/json, text/plain, */*",
-                    "Content-Type": "application/json",
-                    "Accept-Language": "en-US,en;q=0.9,id;q=0.8",
-                    "Dnt": "1",
-                    "Origin": "https://faucet.sonic.game",
-                    "Priority": "u=1, i",
-                    "Referer": "https://faucet.sonic.game/",
-                    "User-Agent": userAgent,
-                    "sec-ch-ua-mobile": "?0",
-                    "sec-ch-ua-platform": "Windows",
-                },
-                agent
-            }).then(res => res.json());
-
-            if (res.status === 'ok') {
-                return `Successfully claim faucet 0.5 SOL!`.green;
-            } else {
-                console.log(`${address} 领水请求返回失败, 重试 (${retryTimes + 1}/${maxRetries}), ${res.message})`.yellow);
-                await delay(2);
-            }
-        } catch (error) {
-            console.log(`${address} 领水请求发送失败, 重试 (${retryTimes + 1}/${maxRetries}), ${error})`.yellow);
-            await delay(2);
-        }
+    };
+    try{
+        const res = await solver.cloudflareTurnstile({
+            pageurl: "https://faucet.sonic.game/#/",
+            sitekey: "0x4AAAAAAAc6HG1RMG_8EHSC"    
+        })
+        await faucet_claim(address, res.data);
+    } catch(error) {
+        await retry(error);
     }
-    return `Failed to claim faucet after ${maxRetries} retries.`.red;
 }
+
 
 (async () => {
     try {
         for (const privateKey of PRIVATE_KEYS) {
-            const publicKey = getKeypair(privateKey).publicKey.toBase58();
+            const publicKey = get_keypair(privateKey).publicKey.toBase58();
             console.log(`${publicKey} 开始领水`.green);
             
-            const faucet_result = await claimFaucet('https://faucet-api.sonic.game/airdrop', publicKey);
-            console.log(`${publicKey}领水结果: ${faucet_result}`);
-            await delay(5);
+            await bypass_turnstile(publicKey);
+            await delay(3);
         }
     } catch (error) {
         console.error('Error in main function:', error);
